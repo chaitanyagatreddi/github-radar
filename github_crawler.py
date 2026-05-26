@@ -106,7 +106,8 @@ class GitHubBrowserScanner:
 
     # Blacklisted prefixes — not real repos
     SKIP_OWNERS = {"sponsors", "search", "trending", "explore", "topics",
-                   "marketplace", "features", "enterprise", "collections"}
+                   "marketplace", "features", "enterprise", "collections",
+                   "contact", "about", "login", "signup", "settings", "orgs"}
 
     async def search_repos(self, keyword: str, max_repos: int = 5) -> list[Repo]:
         """Search GitHub for repos matching the keyword, sorted by stars."""
@@ -133,12 +134,17 @@ class GitHubBrowserScanner:
             )
             for link in result_links:
                 href = (await link.get_attribute("href") or "").strip()
+                # Reject anything with query strings, fragments, or encoded chars
+                if "?" in href or "#" in href or "%" in href:
+                    continue
                 parts = href.strip("/").split("/")
                 if (len(parts) == 2
                         and parts[0] not in self.SKIP_OWNERS
                         and parts[1]
                         and "." not in parts[0]
-                        and not parts[1].startswith(".")):
+                        and not parts[1].startswith(".")
+                        and re.match(r'^[a-zA-Z0-9][a-zA-Z0-9\-\.]{0,38}$', parts[0])
+                        and re.match(r'^[a-zA-Z0-9][a-zA-Z0-9\-\.\_]{0,99}$', parts[1])):
                     full = f"https://github.com/{parts[0]}/{parts[1]}"
                     if full not in seen:
                         seen.add(full)
@@ -191,11 +197,22 @@ class GitHubBrowserScanner:
             except:
                 pass
 
-            # Description
+            # Description — try multiple selectors across GitHub DOM versions
             try:
-                desc_el = await self.page.query_selector("p.f4.my-3, [data-testid='repo-description'], .repository-description")
+                desc_el = await self.page.query_selector(
+                    "[data-testid='repo-description'], "
+                    "p.f4.my-3, "
+                    ".repository-description, "
+                    "#repo-content-pjax-container p.color-fg-muted, "
+                    "p[class*='description']"
+                )
                 if desc_el:
                     repo.description = (await desc_el.inner_text()).strip()[:200]
+                else:
+                    # Fallback: grab meta description tag
+                    meta = await self.page.query_selector("meta[name='description']")
+                    if meta:
+                        repo.description = (await meta.get_attribute("content") or "").strip()[:200]
             except:
                 pass
 
@@ -213,57 +230,60 @@ class GitHubBrowserScanner:
         return repo
 
     async def get_contributors(self, repo: Repo, max_contributors: int = 8) -> list[Contributor]:
-        """Scrape contributors from the repo's /contributors page."""
+        """Get contributors via GitHub REST API (primary) with browser scrape fallback."""
         contributors = []
         seen_users: set = set()
 
-        # /contributors page lists avatars with hovercard links — most reliable
-        url = f"{repo.url}/contributors"
-        try:
-            await self.page.goto(url, timeout=20000)
-            await self.page.wait_for_load_state("domcontentloaded")
-            await asyncio.sleep(3)
-
-            # Strategy 1: hovercard user links
-            links = await self.page.query_selector_all("a[data-hovercard-type='user']")
-            for link in links:
-                href = (await link.get_attribute("href") or "").strip("/")
-                if href and "/" not in href and href not in seen_users:
-                    seen_users.add(href)
+        # Strategy 1: GitHub REST API — reliable, no auth needed for public repos
+        api_data = self._fetch_json(
+            f"https://api.github.com/repos/{repo.name}/contributors?per_page={max_contributors}&anon=false"
+        )
+        if isinstance(api_data, list):
+            for item in api_data[:max_contributors]:
+                username = item.get("login", "")
+                if username and username not in seen_users:
+                    seen_users.add(username)
                     contributors.append(Contributor(
-                        username=href,
-                        profile_url=f"https://github.com/{href}",
+                        username=username,
+                        profile_url=f"https://github.com/{username}",
+                        commits=item.get("contributions", 0),
                         repos_contributed=[repo.name],
                     ))
-                if len(contributors) >= max_contributors:
-                    break
 
-            # Strategy 2: any /username style links that look like GitHub usernames
-            if not contributors:
-                all_links = await self.page.query_selector_all("a[href]")
-                SKIP = {"login", "signup", "about", "pricing", "features",
-                        "enterprise", "marketplace", "sponsors", "explore",
-                        "topics", "trending", "collections", "pulls", "issues",
-                        "actions", "projects", "wiki", "security", "pulse",
-                        "graphs", "settings", "contributors", "commits"}
-                for link in all_links:
-                    href = (await link.get_attribute("href") or "").strip("/")
-                    if (href
-                            and "/" not in href
-                            and re.match(r'^[a-zA-Z0-9][a-zA-Z0-9\-]{0,37}$', href)
-                            and href.lower() not in SKIP
-                            and href not in seen_users):
-                        seen_users.add(href)
-                        contributors.append(Contributor(
-                            username=href,
-                            profile_url=f"https://github.com/{href}",
-                            repos_contributed=[repo.name],
-                        ))
-                    if len(contributors) >= max_contributors:
+        # Strategy 2: Browser scrape fallback if API returned nothing
+        if not contributors:
+            url = f"{repo.url}/contributors"
+            try:
+                await self.page.goto(url, timeout=20000)
+                await self.page.wait_for_load_state("domcontentloaded")
+                await asyncio.sleep(3)
+
+                # Try multiple selector patterns for GitHub's evolving DOM
+                for selector in [
+                    "a[data-hovercard-type='user']",
+                    "li.contrib-person a[href]",
+                    ".contrib-person a[href]",
+                    "ol.contrib-data li a[href]",
+                ]:
+                    links = await self.page.query_selector_all(selector)
+                    for link in links:
+                        href = (await link.get_attribute("href") or "").strip("/")
+                        if (href and "/" not in href
+                                and re.match(r'^[a-zA-Z0-9][a-zA-Z0-9\-]{0,37}$', href)
+                                and href not in seen_users):
+                            seen_users.add(href)
+                            contributors.append(Contributor(
+                                username=href,
+                                profile_url=f"https://github.com/{href}",
+                                repos_contributed=[repo.name],
+                            ))
+                        if len(contributors) >= max_contributors:
+                            break
+                    if contributors:
                         break
 
-        except Exception as e:
-            print(f"  ⚠️  Contributors error for {repo.name}: {e}")
+            except Exception as e:
+                print(f"  ⚠️  Contributors browser error for {repo.name}: {e}")
 
         return contributors[:max_contributors]
 
