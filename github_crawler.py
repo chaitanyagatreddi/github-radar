@@ -827,37 +827,14 @@ class GitHubRadarAgent:
                 emit("profiling", f"👤 Profiling @{contributor.username} ({i+1}/{len(top_to_profile)})")
                 contributor = await self.scanner.get_profile(contributor)
 
-                # ── Email waterfall (respects enabled_sources) ────────
-                if not contributor.email and "github" in self.sources:
-                    emit("crawling_email", f"📧 [GitHub] Crawling commits for @{contributor.username}...")
-                    crawled_emails = self.scanner.crawl_public_emails(contributor.username)
-                    if crawled_emails:
-                        contributor.email = ", ".join(sorted(set(crawled_emails)))
-                        emit("email_found", f"📧 [GitHub] @{contributor.username} → {contributor.email}")
-
-                if not contributor.email and "website" in self.sources and contributor.website:
-                    emit("crawling_email", f"📧 [Website] Checking {contributor.website} for @{contributor.username}...")
-                    website_email = self.scanner.crawl_website_email(contributor.website)
-                    if website_email:
-                        contributor.email = website_email
-                        emit("email_found", f"📧 [Website] @{contributor.username} → {contributor.email}")
-
-                if not contributor.email and "stackoverflow" in self.sources:
-                    emit("crawling_email", f"📧 [StackOverflow] Looking up @{contributor.username}...")
-                    so_email = self.scanner.enrich_via_stackoverflow(contributor.username, contributor.name)
-                    if so_email:
-                        contributor.email = so_email
-                        emit("email_found", f"📧 [StackOverflow] @{contributor.username} → {contributor.email}")
-
-                if not contributor.email and "websearch" in self.sources and contributor.name:
-                    emit("crawling_email", f"📧 [Search] DuckDuckGo lookup for @{contributor.username}...")
-                    search_email = self.scanner.enrich_via_search(contributor.name, contributor.company, contributor.username)
-                    if search_email:
-                        contributor.email = search_email
-                        emit("email_found", f"📧 [Search] @{contributor.username} → {contributor.email}")
-
-                if not contributor.email:
-                    emit("email_none", f"📧 @{contributor.username} — no email found")
+                # ── Email: GitHub commits + events API ───────────────
+                emit("crawling_email", f"📧 [GitHub] Crawling commits for @{contributor.username}...")
+                crawled_emails = self.scanner.crawl_public_emails(contributor.username)
+                if crawled_emails:
+                    contributor.email = ", ".join(sorted(set(crawled_emails)))
+                    emit("email_found", f"📧 [GitHub] @{contributor.username} → {contributor.email}")
+                elif not contributor.email:
+                    emit("email_none", f"📧 @{contributor.username} — no public email found")
 
                 emit("profile_done", f"@{contributor.username} — {contributor.company or contributor.bio[:50] or 'no bio'}")
 

@@ -157,12 +157,9 @@ GITHUB_RADAR_HTML = """<!DOCTYPE html>
   </div>
 
   <div style="margin-top:12px">
-    <div style="font-size:11px;color:#484f58;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Email Sources <span style="color:#30363d;font-weight:400;text-transform:none">(click to toggle)</span></div>
+    <div style="font-size:11px;color:#484f58;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Email Sources</div>
     <div style="display:flex;flex-wrap:wrap;gap:8px">
-      <div class="source-chip enabled" id="src-github"        onclick="toggleSource('github')"        title="GitHub events API + commit patches">📧 GitHub</div>
-      <div class="source-chip enabled" id="src-website"       onclick="toggleSource('website')"       title="Scrape personal website via Firecrawl">🌍 Website</div>
-      <div class="source-chip enabled" id="src-stackoverflow" onclick="toggleSource('stackoverflow')" title="Stack Overflow profile lookup">🔶 Stack Overflow</div>
-      <div class="source-chip enabled" id="src-websearch"     onclick="toggleSource('websearch')"     title="DuckDuckGo search via Firecrawl">🔎 Web Search</div>
+      <div class="source-chip enabled" id="src-github" title="GitHub events API + commit patches">📧 GitHub Commits</div>
     </div>
   </div>
 
@@ -223,20 +220,8 @@ function setSrc(id, state) {
   el.className = 'source-chip ' + state;
 }
 
-function toggleSource(id) {
-  const el = document.getElementById('src-' + id);
-  if (!el) return;
-  el.className = el.className.includes('enabled')
-    ? 'source-chip disabled'
-    : 'source-chip enabled';
-}
-
 function getEnabledSources() {
-  return ['github','website','stackoverflow','websearch']
-    .filter(s => {
-      const el = document.getElementById('src-' + s);
-      return el && el.className.includes('enabled');
-    }).join(',');
+  return 'github';
 }
 
 function startScan() {
@@ -254,11 +239,7 @@ function startScan() {
   document.getElementById('log').innerHTML = '';
 
   ['browser','search','contributors','profiles','analysis'].forEach(c => setChip(c, ''));
-  // Reset source chips to enabled/disabled but not running
-  ['github','website','stackoverflow','websearch'].forEach(s => {
-    const el = document.getElementById('src-' + s);
-    if (el && !el.className.includes('disabled')) el.className = 'source-chip enabled';
-  });
+  setSrc('github', 'enabled');
 
   log('Starting GitHub Radar scan for: ' + keyword, true);
   log('Email sources: ' + (sources || 'none'));
@@ -282,14 +263,8 @@ function startScan() {
       if (type === 'repos_found')                            setChip('search', 'done');
       if (type === 'contributors_found')                     setChip('contributors', 'active');
       if (type === 'profiling')                              { setChip('contributors', 'done'); setChip('profiles', 'active'); }
-      if (type === 'crawling_email' && text.includes('[GitHub]'))       setSrc('github', 'running');
-      if (type === 'crawling_email' && text.includes('[Website]'))      setSrc('website', 'running');
-      if (type === 'crawling_email' && text.includes('[StackOverflow]'))setSrc('stackoverflow', 'running');
-      if (type === 'crawling_email' && text.includes('[Search]'))       setSrc('websearch', 'running');
-      if (type === 'email_found'    && text.includes('[GitHub]'))       setSrc('github', 'found');
-      if (type === 'email_found'    && text.includes('[Website]'))      setSrc('website', 'found');
-      if (type === 'email_found'    && text.includes('[StackOverflow]'))setSrc('stackoverflow', 'found');
-      if (type === 'email_found'    && text.includes('[Search]'))       setSrc('websearch', 'found');
+      if (type === 'crawling_email' && text.includes('[GitHub]')) setSrc('github', 'running');
+      if (type === 'email_found'    && text.includes('[GitHub]')) setSrc('github', 'found');
       if (type === 'analyzing')   { setChip('profiles','done'); setChip('analysis', 'active'); }
       if (type === 'scored')       setChip('analysis', 'active');
 
