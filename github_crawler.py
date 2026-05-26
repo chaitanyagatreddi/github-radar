@@ -32,7 +32,7 @@ import openai
 # ── Config ────────────────────────────────────────────────────────
 
 BB_API_KEY     = os.environ.get("BROWSERBASE_API_KEY", "")
-BB_PROJECT_ID  = os.environ.get("BROWSERBASE_PROJECT_ID", "")
+BB_PROJECT_ID  = os.environ.get("BROWSERBASE_PROJECT_ID") or os.environ.get("BROWSERBASE_PROJECTID", "")
 OPENAI_KEY     = os.environ.get("OPENAI_API_KEY", "")
 
 # ── Data structures ───────────────────────────────────────────────
