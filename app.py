@@ -143,7 +143,10 @@ GITHUB_RADAR_HTML = """<!DOCTYPE html>
     <div class="agent-chip" id="chip-search">🔍 Search</div>
     <div class="agent-chip" id="chip-contributors">👥 Contributors</div>
     <div class="agent-chip" id="chip-profiles">👤 Profiles</div>
-    <div class="agent-chip" id="chip-emails">📧 Emails</div>
+    <div class="agent-chip" id="chip-emails">📧 GitHub Emails</div>
+    <div class="agent-chip" id="chip-website">🌍 Website</div>
+    <div class="agent-chip" id="chip-stackoverflow">🔶 Stack Overflow</div>
+    <div class="agent-chip" id="chip-search2">🔎 Web Search</div>
     <div class="agent-chip" id="chip-analysis">🤖 Analysis</div>
   </div>
   <div class="log" id="log"><div class="log-line">Ready. Enter a keyword and click Scan.</div></div>
@@ -210,7 +213,7 @@ function startScan() {
   document.getElementById('contributorsBody').innerHTML = '';
   document.getElementById('log').innerHTML = '';
 
-  ['browser','search','contributors','profiles','emails','analysis'].forEach(c => setChip(c, ''));
+  ['browser','search','contributors','profiles','emails','website','stackoverflow','search2','analysis'].forEach(c => setChip(c, ''));
 
   log('Starting GitHub Radar scan for: ' + keyword, true);
 
@@ -233,9 +236,15 @@ function startScan() {
       if (type === 'contributors_found')                     setChip('contributors', 'active');
       if (type === 'profiling')                              { setChip('contributors', 'done'); setChip('profiles', 'active'); }
       if (type === 'profile_done')                           setChip('profiles', 'active');
-      if (type === 'crawling_email')                         setChip('emails', 'active');
-      if (type === 'email_found')                            setChip('emails', 'active');
-      if (type === 'analyzing')                              { setChip('emails', 'done'); setChip('analysis', 'active'); }
+      if (type === 'crawling_email' && text.includes('[GitHub]'))       { setChip('profiles','done'); setChip('emails', 'active'); }
+      if (type === 'crawling_email' && text.includes('[Website]'))      setChip('website', 'active');
+      if (type === 'crawling_email' && text.includes('[StackOverflow]'))setChip('stackoverflow', 'active');
+      if (type === 'crawling_email' && text.includes('[Search]'))       setChip('search2', 'active');
+      if (type === 'email_found'    && text.includes('[GitHub]'))       setChip('emails', 'done');
+      if (type === 'email_found'    && text.includes('[Website]'))      setChip('website', 'done');
+      if (type === 'email_found'    && text.includes('[StackOverflow]'))setChip('stackoverflow', 'done');
+      if (type === 'email_found'    && text.includes('[Search]'))       setChip('search2', 'done');
+      if (type === 'analyzing')   { ['emails','website','stackoverflow','search2'].forEach(c=>setChip(c,'done')); setChip('analysis', 'active'); }
       if (type === 'scored')                                 setChip('analysis', 'active');
 
       if (type === 'repo_detail' && data.repo) {

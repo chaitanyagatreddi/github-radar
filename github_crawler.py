@@ -423,6 +423,68 @@ class GitHubBrowserScanner:
 
         return ""
 
+    # ── Fix C: Stack Overflow profile ────────────────────────────
+
+    @staticmethod
+    def enrich_via_stackoverflow(username: str, name: str) -> str:
+        """Look up contributor on Stack Overflow and extract email or website.
+
+        Uses the free SO API (no key needed for basic lookups).
+        Searches by GitHub username first, then by display name.
+        Returns email if found on their SO profile, else empty string.
+        """
+        fc_key = os.environ.get("FIRECRAWL_API_KEY", "")
+        EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+        NOREPLY  = {"noreply@github.com", "users.noreply.github.com", "stackoverflow.com"}
+
+        # Step 1: find SO user_id via API
+        search_term = urllib.parse.quote(username)
+        api_url = (
+            f"https://api.stackexchange.com/2.3/users"
+            f"?inname={search_term}&site=stackoverflow&pagesize=3&order=desc&sort=reputation"
+        )
+        data = GitHubBrowserScanner._fetch_json(api_url)
+        user_id = None
+        so_profile_url = None
+
+        if isinstance(data, dict):
+            items = data.get("items", [])
+            # Try to match by display_name or GitHub username
+            for item in items:
+                display = (item.get("display_name") or "").lower()
+                if username.lower() in display or (name and name.lower().split()[0] in display):
+                    user_id = item.get("user_id")
+                    so_profile_url = item.get("link", "")
+                    break
+            if not user_id and items:
+                user_id = items[0].get("user_id")
+                so_profile_url = items[0].get("link", "")
+
+        if not so_profile_url or not fc_key:
+            return ""
+
+        # Step 2: Firecrawl scrape the SO profile page
+        try:
+            from firecrawl import FirecrawlApp
+            app = FirecrawlApp(api_key=fc_key)
+            result = app.scrape_url(so_profile_url, formats=["markdown"])
+            text = html.unescape(result.markdown or "")
+
+            # Extract email
+            for match in EMAIL_RE.finditer(text):
+                email = match.group(0).lower()
+                if not any(nr in email for nr in NOREPLY):
+                    return email
+
+            # Extract website link from profile, then scrape that too
+            website_match = re.search(r'https?://(?!stackoverflow)[^\s\)\"\']+', text)
+            if website_match:
+                return GitHubBrowserScanner.crawl_website_email(website_match.group(0))
+        except Exception:
+            pass
+
+        return ""
+
     # ── Fix B: DuckDuckGo search via Firecrawl ───────────────────
 
     @staticmethod
@@ -778,6 +840,14 @@ class GitHubRadarAgent:
                     if website_email:
                         contributor.email = website_email
                         emit("email_found", f"📧 [Website] @{contributor.username} → {contributor.email}")
+
+                # Fix C: Stack Overflow profile
+                if not contributor.email:
+                    emit("crawling_email", f"📧 [StackOverflow] Looking up @{contributor.username}...")
+                    so_email = self.scanner.enrich_via_stackoverflow(contributor.username, contributor.name)
+                    if so_email:
+                        contributor.email = so_email
+                        emit("email_found", f"📧 [StackOverflow] @{contributor.username} → {contributor.email}")
 
                 # Fix B: DuckDuckGo search via Firecrawl
                 if not contributor.email and contributor.name:
