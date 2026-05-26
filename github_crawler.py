@@ -755,10 +755,14 @@ Return JSON only. No markdown:
 class GitHubRadarAgent:
     """Orchestrates the full GitHub crawl pipeline with SSE streaming."""
 
-    def __init__(self, keyword: str, max_repos: int = 5, max_contributors: int = 8):
+    DEFAULT_SOURCES = {"github", "website", "stackoverflow", "websearch"}
+
+    def __init__(self, keyword: str, max_repos: int = 5, max_contributors: int = 8,
+                 enabled_sources: set = None):
         self.keyword = keyword
         self.max_repos = max_repos
         self.max_contributors = max_contributors
+        self.sources = enabled_sources if enabled_sources is not None else self.DEFAULT_SOURCES
         self.scanner = GitHubBrowserScanner()
         self.analyzer = GitHubAnalyzer()
 
@@ -823,44 +827,37 @@ class GitHubRadarAgent:
                 emit("profiling", f"👤 Profiling @{contributor.username} ({i+1}/{len(top_to_profile)})")
                 contributor = await self.scanner.get_profile(contributor)
 
-                # ── Email waterfall: GitHub → Fix A → Fix B ──────────
-                # Step 0: already have email from profile scrape?
-                if not contributor.email:
-                    # GitHub events API + personal repo commit patches
+                # ── Email waterfall (respects enabled_sources) ────────
+                if not contributor.email and "github" in self.sources:
                     emit("crawling_email", f"📧 [GitHub] Crawling commits for @{contributor.username}...")
                     crawled_emails = self.scanner.crawl_public_emails(contributor.username)
                     if crawled_emails:
-                        all_emails = set(crawled_emails)
-                        contributor.email = ", ".join(sorted(all_emails))
+                        contributor.email = ", ".join(sorted(set(crawled_emails)))
+                        emit("email_found", f"📧 [GitHub] @{contributor.username} → {contributor.email}")
 
-                # Fix A: personal website
-                if not contributor.email and contributor.website:
+                if not contributor.email and "website" in self.sources and contributor.website:
                     emit("crawling_email", f"📧 [Website] Checking {contributor.website} for @{contributor.username}...")
                     website_email = self.scanner.crawl_website_email(contributor.website)
                     if website_email:
                         contributor.email = website_email
                         emit("email_found", f"📧 [Website] @{contributor.username} → {contributor.email}")
 
-                # Fix C: Stack Overflow profile
-                if not contributor.email:
+                if not contributor.email and "stackoverflow" in self.sources:
                     emit("crawling_email", f"📧 [StackOverflow] Looking up @{contributor.username}...")
                     so_email = self.scanner.enrich_via_stackoverflow(contributor.username, contributor.name)
                     if so_email:
                         contributor.email = so_email
                         emit("email_found", f"📧 [StackOverflow] @{contributor.username} → {contributor.email}")
 
-                # Fix B: DuckDuckGo search via Firecrawl
-                if not contributor.email and contributor.name:
+                if not contributor.email and "websearch" in self.sources and contributor.name:
                     emit("crawling_email", f"📧 [Search] DuckDuckGo lookup for @{contributor.username}...")
                     search_email = self.scanner.enrich_via_search(contributor.name, contributor.company, contributor.username)
                     if search_email:
                         contributor.email = search_email
                         emit("email_found", f"📧 [Search] @{contributor.username} → {contributor.email}")
 
-                if contributor.email:
-                    emit("email_found", f"📧 @{contributor.username} → {contributor.email}")
-                else:
-                    emit("email_none", f"📧 @{contributor.username} — no email found (all sources exhausted)")
+                if not contributor.email:
+                    emit("email_none", f"📧 @{contributor.username} — no email found")
 
                 emit("profile_done", f"@{contributor.username} — {contributor.company or contributor.bio[:50] or 'no bio'}")
 

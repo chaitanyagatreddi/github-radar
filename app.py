@@ -82,6 +82,13 @@ GITHUB_RADAR_HTML = """<!DOCTYPE html>
                transition: all .15s; user-select: none; }
   .tool-chip:hover { border-color: #58a6ff; color: #58a6ff; background: rgba(88,166,255,0.08); }
   .tool-chip.active { border-color: #3fb950; color: #3fb950; background: rgba(63,185,80,0.1); }
+  .source-chip { background: #21262d; border: 1px solid #30363d; border-radius: 20px;
+                 padding: 5px 14px; font-size: 12px; color: #8b949e; cursor: pointer;
+                 transition: all .15s; user-select: none; position: relative; }
+  .source-chip.enabled  { border-color: #3fb950; color: #3fb950; background: rgba(63,185,80,0.1); }
+  .source-chip.disabled { border-color: #30363d; color: #484f58; background: #161b22; text-decoration: line-through; }
+  .source-chip.running  { border-color: #58a6ff; color: #58a6ff; background: rgba(88,166,255,0.1); }
+  .source-chip.found    { border-color: #d29922; color: #d29922; background: rgba(210,153,34,0.1); }
 </style>
 </head>
 <body>
@@ -138,18 +145,28 @@ GITHUB_RADAR_HTML = """<!DOCTYPE html>
     <button id="scanBtn" onclick="startScan()">🔍 Scan GitHub</button>
   </div>
 
-  <div class="agents" id="agents">
-    <div class="agent-chip" id="chip-browser">🌐 Browser</div>
-    <div class="agent-chip" id="chip-search">🔍 Search</div>
-    <div class="agent-chip" id="chip-contributors">👥 Contributors</div>
-    <div class="agent-chip" id="chip-profiles">👤 Profiles</div>
-    <div class="agent-chip" id="chip-emails">📧 GitHub Emails</div>
-    <div class="agent-chip" id="chip-website">🌍 Website</div>
-    <div class="agent-chip" id="chip-stackoverflow">🔶 Stack Overflow</div>
-    <div class="agent-chip" id="chip-search2">🔎 Web Search</div>
-    <div class="agent-chip" id="chip-analysis">🤖 Analysis</div>
+  <div style="margin-top:14px">
+    <div style="font-size:11px;color:#484f58;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Pipeline</div>
+    <div class="agents" id="agents">
+      <div class="agent-chip" id="chip-browser">🌐 Browser</div>
+      <div class="agent-chip" id="chip-search">🔍 Repos</div>
+      <div class="agent-chip" id="chip-contributors">👥 Contributors</div>
+      <div class="agent-chip" id="chip-profiles">👤 Profiles</div>
+      <div class="agent-chip" id="chip-analysis">🤖 Analysis</div>
+    </div>
   </div>
-  <div class="log" id="log"><div class="log-line">Ready. Enter a keyword and click Scan.</div></div>
+
+  <div style="margin-top:12px">
+    <div style="font-size:11px;color:#484f58;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Email Sources <span style="color:#30363d;font-weight:400;text-transform:none">(click to toggle)</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      <div class="source-chip enabled" id="src-github"        onclick="toggleSource('github')"        title="GitHub events API + commit patches">📧 GitHub</div>
+      <div class="source-chip enabled" id="src-website"       onclick="toggleSource('website')"       title="Scrape personal website via Firecrawl">🌍 Website</div>
+      <div class="source-chip enabled" id="src-stackoverflow" onclick="toggleSource('stackoverflow')" title="Stack Overflow profile lookup">🔶 Stack Overflow</div>
+      <div class="source-chip enabled" id="src-websearch"     onclick="toggleSource('websearch')"     title="DuckDuckGo search via Firecrawl">🔎 Web Search</div>
+    </div>
+  </div>
+
+  <div class="log" id="log" style="margin-top:14px"><div class="log-line">Ready. Enter a keyword and click Scan.</div></div>
 </div>
 
 <div class="card hidden" id="reposSection">
@@ -200,11 +217,34 @@ function setChip(id, state) {
   el.className = 'agent-chip ' + state;
 }
 
+function setSrc(id, state) {
+  const el = document.getElementById('src-' + id);
+  if (!el) return;
+  el.className = 'source-chip ' + state;
+}
+
+function toggleSource(id) {
+  const el = document.getElementById('src-' + id);
+  if (!el) return;
+  el.className = el.className.includes('enabled')
+    ? 'source-chip disabled'
+    : 'source-chip enabled';
+}
+
+function getEnabledSources() {
+  return ['github','website','stackoverflow','websearch']
+    .filter(s => {
+      const el = document.getElementById('src-' + s);
+      return el && el.className.includes('enabled');
+    }).join(',');
+}
+
 function startScan() {
   const keyword = document.getElementById('keyword').value.trim();
   if (!keyword) return;
   const maxRepos = document.getElementById('maxRepos').value;
   const maxContributors = document.getElementById('maxContributors').value;
+  const sources = getEnabledSources();
 
   document.getElementById('scanBtn').disabled = true;
   document.getElementById('reposSection').classList.add('hidden');
@@ -213,12 +253,19 @@ function startScan() {
   document.getElementById('contributorsBody').innerHTML = '';
   document.getElementById('log').innerHTML = '';
 
-  ['browser','search','contributors','profiles','emails','website','stackoverflow','search2','analysis'].forEach(c => setChip(c, ''));
+  ['browser','search','contributors','profiles','analysis'].forEach(c => setChip(c, ''));
+  // Reset source chips to enabled/disabled but not running
+  ['github','website','stackoverflow','websearch'].forEach(s => {
+    const el = document.getElementById('src-' + s);
+    if (el && !el.className.includes('disabled')) el.className = 'source-chip enabled';
+  });
 
   log('Starting GitHub Radar scan for: ' + keyword, true);
+  log('Email sources: ' + (sources || 'none'));
 
   const es = new EventSource('/api/github/stream?keyword=' + encodeURIComponent(keyword) +
-    '&max_repos=' + maxRepos + '&max_contributors=' + maxContributors);
+    '&max_repos=' + maxRepos + '&max_contributors=' + maxContributors +
+    '&sources=' + encodeURIComponent(sources));
 
   es.onmessage = function(e) {
     try {
@@ -235,17 +282,16 @@ function startScan() {
       if (type === 'repos_found')                            setChip('search', 'done');
       if (type === 'contributors_found')                     setChip('contributors', 'active');
       if (type === 'profiling')                              { setChip('contributors', 'done'); setChip('profiles', 'active'); }
-      if (type === 'profile_done')                           setChip('profiles', 'active');
-      if (type === 'crawling_email' && text.includes('[GitHub]'))       { setChip('profiles','done'); setChip('emails', 'active'); }
-      if (type === 'crawling_email' && text.includes('[Website]'))      setChip('website', 'active');
-      if (type === 'crawling_email' && text.includes('[StackOverflow]'))setChip('stackoverflow', 'active');
-      if (type === 'crawling_email' && text.includes('[Search]'))       setChip('search2', 'active');
-      if (type === 'email_found'    && text.includes('[GitHub]'))       setChip('emails', 'done');
-      if (type === 'email_found'    && text.includes('[Website]'))      setChip('website', 'done');
-      if (type === 'email_found'    && text.includes('[StackOverflow]'))setChip('stackoverflow', 'done');
-      if (type === 'email_found'    && text.includes('[Search]'))       setChip('search2', 'done');
-      if (type === 'analyzing')   { ['emails','website','stackoverflow','search2'].forEach(c=>setChip(c,'done')); setChip('analysis', 'active'); }
-      if (type === 'scored')                                 setChip('analysis', 'active');
+      if (type === 'crawling_email' && text.includes('[GitHub]'))       setSrc('github', 'running');
+      if (type === 'crawling_email' && text.includes('[Website]'))      setSrc('website', 'running');
+      if (type === 'crawling_email' && text.includes('[StackOverflow]'))setSrc('stackoverflow', 'running');
+      if (type === 'crawling_email' && text.includes('[Search]'))       setSrc('websearch', 'running');
+      if (type === 'email_found'    && text.includes('[GitHub]'))       setSrc('github', 'found');
+      if (type === 'email_found'    && text.includes('[Website]'))      setSrc('website', 'found');
+      if (type === 'email_found'    && text.includes('[StackOverflow]'))setSrc('stackoverflow', 'found');
+      if (type === 'email_found'    && text.includes('[Search]'))       setSrc('websearch', 'found');
+      if (type === 'analyzing')   { setChip('profiles','done'); setChip('analysis', 'active'); }
+      if (type === 'scored')       setChip('analysis', 'active');
 
       if (type === 'repo_detail' && data.repo) {
         document.getElementById('reposSection').classList.remove('hidden');
@@ -314,6 +360,8 @@ def github_stream():
     keyword = request.args.get("keyword", "vulnerability scanner")
     max_repos = int(request.args.get("max_repos", 5))
     max_contributors = int(request.args.get("max_contributors", 8))
+    sources_raw = request.args.get("sources", "github,website,stackoverflow,websearch")
+    enabled_sources = set(s.strip() for s in sources_raw.split(",") if s.strip())
 
     q = queue.Queue()
 
@@ -330,6 +378,7 @@ def github_stream():
                 keyword=keyword,
                 max_repos=max_repos,
                 max_contributors=max_contributors,
+                enabled_sources=enabled_sources,
             )
             loop.run_until_complete(agent.run(yield_event=yield_event))
         except Exception as e:
