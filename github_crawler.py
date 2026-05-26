@@ -13,6 +13,7 @@ Usage:
 """
 
 import asyncio
+import html
 import json
 import os
 import re
@@ -57,6 +58,7 @@ class Contributor:
     pinned_repos: list = field(default_factory=list)
     orgs: list = field(default_factory=list)
     email: str = ""
+    website: str = ""
     activity_score: int = 0
     repos_contributed: list = field(default_factory=list)
 
@@ -327,7 +329,6 @@ class GitHubBrowserScanner:
 
             # Email (publicly visible on profile)
             try:
-                # GitHub renders email as a link with mailto: or plain text with envelope icon
                 email_el = await self.page.query_selector(
                     "a[href^='mailto:'], li[itemprop='email'], "
                     ".p-email, span[itemprop='email']"
@@ -336,7 +337,6 @@ class GitHubBrowserScanner:
                     raw = await email_el.inner_text()
                     contributor.email = raw.strip()
                 else:
-                    # Fallback: scan page text for email pattern near the profile header
                     page_text = await self.page.inner_text(".vcard-details") if await self.page.query_selector(".vcard-details") else ""
                     match = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", page_text)
                     if match:
@@ -344,10 +344,103 @@ class GitHubBrowserScanner:
             except:
                 pass
 
+            # Website URL from profile (used later for Fix A email mining)
+            try:
+                website_el = await self.page.query_selector(
+                    "a[itemprop='url'], .p-url, li a[rel='nofollow me']"
+                )
+                if website_el:
+                    contributor.website = (await website_el.get_attribute("href") or "").strip()
+            except:
+                pass
+
         except Exception as e:
             print(f"  ⚠️  Profile error for {contributor.username}: {e}")
 
         return contributor
+
+    # ── Fix A: personal website email mining ─────────────────────
+
+    @staticmethod
+    def crawl_website_email(website_url: str) -> str:
+        """Fetch a contributor's personal website and extract any email address.
+
+        Tries the root URL first, then common contact paths.
+        Returns the first clean email found, or empty string.
+        """
+        if not website_url or not website_url.startswith("http"):
+            return ""
+
+        NOREPLY = {"noreply@github.com", "users.noreply.github.com"}
+        EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+
+        def fetch_text(url: str) -> str:
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0 GitHubRadar/1.0"},
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    raw = resp.read().decode("utf-8", errors="ignore")
+                    # Strip HTML tags for cleaner regex matching
+                    return re.sub(r"<[^>]+>", " ", raw)
+            except Exception:
+                return ""
+
+        base = website_url.rstrip("/")
+        paths_to_try = ["", "/contact", "/about", "/about-me"]
+
+        for path in paths_to_try:
+            text = fetch_text(base + path)
+            if not text:
+                continue
+            # Decode obfuscated mailto: links (e.g. "&#64;" → "@")
+            text = html.unescape(text)
+            for match in EMAIL_RE.finditer(text):
+                email = match.group(0).lower()
+                if not any(nr in email for nr in NOREPLY):
+                    return email
+
+        return ""
+
+    # ── Fix B: Apollo people-match enrichment ────────────────────
+
+    @staticmethod
+    def enrich_via_apollo(name: str, company: str) -> str:
+        """Look up a contributor by name + company in Apollo via the REST API.
+
+        Uses APOLLO_API_KEY from env. Returns first matched work email or "".
+        """
+        api_key = os.environ.get("APOLLO_API_KEY", "")
+        if not api_key or not name:
+            return ""
+
+        payload = json.dumps({
+            "name": name,
+            "organization_name": company or "",
+        }).encode()
+
+        try:
+            req = urllib.request.Request(
+                "https://api.apollo.io/api/v1/people/match",
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Cache-Control": "no-cache",
+                    "X-Api-Key": api_key,
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            person = data.get("person") or {}
+            email = person.get("email", "")
+            if email and "apollo" not in email:
+                return email.lower()
+        except Exception:
+            pass
+
+        return ""
 
     # ── Public email crawling ────────────────────────────────────
 
@@ -640,18 +733,36 @@ class GitHubRadarAgent:
                 emit("profiling", f"👤 Profiling @{contributor.username} ({i+1}/{len(top_to_profile)})")
                 contributor = await self.scanner.get_profile(contributor)
 
-                # Crawl public emails from Events API + commit patches
-                emit("crawling_email", f"📧 Crawling public emails for @{contributor.username}...")
-                crawled_emails = self.scanner.crawl_public_emails(contributor.username)
-                if crawled_emails:
-                    # Merge with profile email if present
-                    all_emails = set(crawled_emails)
-                    if contributor.email:
-                        all_emails.add(contributor.email.lower())
-                    contributor.email = ", ".join(sorted(all_emails))
+                # ── Email waterfall: GitHub → Fix A → Fix B ──────────
+                # Step 0: already have email from profile scrape?
+                if not contributor.email:
+                    # GitHub events API + personal repo commit patches
+                    emit("crawling_email", f"📧 [GitHub] Crawling commits for @{contributor.username}...")
+                    crawled_emails = self.scanner.crawl_public_emails(contributor.username)
+                    if crawled_emails:
+                        all_emails = set(crawled_emails)
+                        contributor.email = ", ".join(sorted(all_emails))
+
+                # Fix A: personal website
+                if not contributor.email and contributor.website:
+                    emit("crawling_email", f"📧 [Website] Checking {contributor.website} for @{contributor.username}...")
+                    website_email = self.scanner.crawl_website_email(contributor.website)
+                    if website_email:
+                        contributor.email = website_email
+                        emit("email_found", f"📧 [Website] @{contributor.username} → {contributor.email}")
+
+                # Fix B: Apollo enrichment
+                if not contributor.email and contributor.name:
+                    emit("crawling_email", f"📧 [Apollo] Enriching @{contributor.username} ({contributor.name} / {contributor.company})...")
+                    apollo_email = self.scanner.enrich_via_apollo(contributor.name, contributor.company)
+                    if apollo_email:
+                        contributor.email = apollo_email
+                        emit("email_found", f"📧 [Apollo] @{contributor.username} → {contributor.email}")
+
+                if contributor.email:
                     emit("email_found", f"📧 @{contributor.username} → {contributor.email}")
                 else:
-                    emit("email_none", f"📧 @{contributor.username} — no public email found")
+                    emit("email_none", f"📧 @{contributor.username} — no email found (all sources exhausted)")
 
                 emit("profile_done", f"@{contributor.username} — {contributor.company or contributor.bio[:50] or 'no bio'}")
 
