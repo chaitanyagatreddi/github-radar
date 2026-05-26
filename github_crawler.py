@@ -367,13 +367,16 @@ class GitHubBrowserScanner:
 
         Sources (all public, no auth needed):
         1. GitHub Events API — PushEvent payloads contain commit author emails
-        2. GitHub .patch endpoint — commit patches expose Author: name <email>
-        3. Profile page email (already scraped in get_profile)
+        2. GitHub .patch endpoint — commit patches on personal repos expose Author email
+        3. Personal repo commit history — scan own repos (not org repos) more aggressively
 
         Returns deduplicated list of emails, filtering out noreply addresses.
         """
         emails: set[str] = set()
         NOREPLY = {"noreply@github.com", "users.noreply.github.com"}
+
+        def is_clean(email: str) -> bool:
+            return bool(email) and not any(nr in email for nr in NOREPLY)
 
         # Source 1: Events API — /users/{user}/events/public
         events = GitHubBrowserScanner._fetch_json(
@@ -384,37 +387,63 @@ class GitHubBrowserScanner:
                 if event.get("type") == "PushEvent":
                     for commit in event.get("payload", {}).get("commits", []):
                         email = commit.get("author", {}).get("email", "")
-                        if email and not any(nr in email for nr in NOREPLY):
+                        if is_clean(email):
                             emails.add(email.lower())
 
-        # Source 2: Recent repo commit .patch files
-        # Get user's repos, check latest commit patch for Author email
+        # Source 2 & 3: Personal repos (owned by user, not forks) — mine commit patches
+        # Personal repos have lower privacy paranoia than security org repos.
+        # We fetch more repos and more commits per repo to maximize hit rate.
         repos_data = GitHubBrowserScanner._fetch_json(
-            f"https://api.github.com/users/{username}/repos?sort=pushed&per_page=3"
+            f"https://api.github.com/users/{username}/repos?sort=pushed&per_page=10&type=owner"
         )
         if isinstance(repos_data, list):
-            for repo in repos_data[:3]:
+            # Prioritise non-forked repos first (original work = more likely to have real email)
+            owned = [r for r in repos_data if not r.get("fork", False)]
+            forked = [r for r in repos_data if r.get("fork", False)]
+            ordered = owned[:6] + forked[:2]  # up to 8 repos total
+
+            for repo in ordered:
+                if emails:
+                    # Stop once we have at least one clean email — avoid rate limits
+                    break
                 repo_full = repo.get("full_name", "")
                 if not repo_full:
                     continue
+
+                # Fetch up to 5 recent commits by this author in their own repo
                 commits = GitHubBrowserScanner._fetch_json(
-                    f"https://api.github.com/repos/{repo_full}/commits?author={username}&per_page=1"
+                    f"https://api.github.com/repos/{repo_full}/commits?author={username}&per_page=5"
                 )
-                if isinstance(commits, list) and commits:
-                    sha = commits[0].get("sha", "")
-                    if sha:
-                        patch_url = f"https://github.com/{repo_full}/commit/{sha}.patch"
-                        try:
-                            req = urllib.request.Request(patch_url, headers={"User-Agent": "GitHubRadar/1.0"})
-                            with urllib.request.urlopen(req, timeout=10) as resp:
-                                patch_text = resp.read().decode("utf-8", errors="ignore")[:2000]
-                            # Extract "From: Name <email>" or "Author: Name <email>"
-                            for match in re.finditer(r'(?:From|Author):\s*[^<]*<([^>]+)>', patch_text):
-                                email = match.group(1).lower()
-                                if not any(nr in email for nr in NOREPLY):
-                                    emails.add(email)
-                        except Exception:
-                            pass
+                if not isinstance(commits, list):
+                    continue
+
+                for commit_item in commits[:5]:
+                    sha = commit_item.get("sha", "")
+                    if not sha:
+                        continue
+
+                    # Try commit detail API first (faster, no extra request for patch)
+                    commit_detail = GitHubBrowserScanner._fetch_json(
+                        f"https://api.github.com/repos/{repo_full}/git/commits/{sha}"
+                    )
+                    if isinstance(commit_detail, dict):
+                        email = (commit_detail.get("author") or {}).get("email", "")
+                        if is_clean(email):
+                            emails.add(email.lower())
+                            continue  # Got it, no need for patch
+
+                    # Fallback: .patch file (richer but slower)
+                    patch_url = f"https://github.com/{repo_full}/commit/{sha}.patch"
+                    try:
+                        req = urllib.request.Request(patch_url, headers={"User-Agent": "GitHubRadar/1.0"})
+                        with urllib.request.urlopen(req, timeout=10) as resp:
+                            patch_text = resp.read().decode("utf-8", errors="ignore")[:2000]
+                        for match in re.finditer(r'(?:From|Author):\s*[^<]*<([^>]+)>', patch_text):
+                            email = match.group(1).lower()
+                            if is_clean(email):
+                                emails.add(email)
+                    except Exception:
+                        pass
 
         return sorted(emails)
 
