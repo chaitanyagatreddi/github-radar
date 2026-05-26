@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
@@ -359,84 +360,91 @@ class GitHubBrowserScanner:
 
         return contributor
 
-    # ── Fix A: personal website email mining ─────────────────────
+    # ── Fix A: personal website email mining via Firecrawl ───────
 
     @staticmethod
     def crawl_website_email(website_url: str) -> str:
-        """Fetch a contributor's personal website and extract any email address.
+        """Scrape a contributor's personal website with Firecrawl and extract email.
 
-        Tries the root URL first, then common contact paths.
+        Firecrawl handles JS-rendered sites and returns clean markdown.
+        Tries root URL first, then /contact and /about paths.
         Returns the first clean email found, or empty string.
         """
         if not website_url or not website_url.startswith("http"):
             return ""
 
+        fc_key = os.environ.get("FIRECRAWL_API_KEY", "")
+        if not fc_key:
+            return ""
+
+        try:
+            from firecrawl import FirecrawlApp
+        except ImportError:
+            return ""
+
         NOREPLY = {"noreply@github.com", "users.noreply.github.com"}
         EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
-        def fetch_text(url: str) -> str:
-            try:
-                req = urllib.request.Request(
-                    url,
-                    headers={"User-Agent": "Mozilla/5.0 GitHubRadar/1.0"},
-                )
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    raw = resp.read().decode("utf-8", errors="ignore")
-                    # Strip HTML tags for cleaner regex matching
-                    return re.sub(r"<[^>]+>", " ", raw)
-            except Exception:
-                return ""
-
+        app = FirecrawlApp(api_key=fc_key)
         base = website_url.rstrip("/")
         paths_to_try = ["", "/contact", "/about", "/about-me"]
 
         for path in paths_to_try:
-            text = fetch_text(base + path)
-            if not text:
+            url = base + path
+            try:
+                result = app.scrape_url(url, formats=["markdown"])
+                text = html.unescape(result.markdown or "")
+                for match in EMAIL_RE.finditer(text):
+                    email = match.group(0).lower()
+                    if not any(nr in email for nr in NOREPLY):
+                        return email
+            except Exception:
                 continue
-            # Decode obfuscated mailto: links (e.g. "&#64;" → "@")
-            text = html.unescape(text)
-            for match in EMAIL_RE.finditer(text):
-                email = match.group(0).lower()
-                if not any(nr in email for nr in NOREPLY):
-                    return email
 
         return ""
 
-    # ── Fix B: Apollo people-match enrichment ────────────────────
+    # ── Fix B: DuckDuckGo search via Firecrawl ───────────────────
 
     @staticmethod
-    def enrich_via_apollo(name: str, company: str) -> str:
-        """Look up a contributor by name + company in Apollo via the REST API.
+    def enrich_via_search(name: str, company: str, username: str) -> str:
+        """Search DuckDuckGo for the contributor's email using Firecrawl.
 
-        Uses APOLLO_API_KEY from env. Returns first matched work email or "".
+        Query: '"name" "company" email contact'
+        Scrapes the search results page and extracts any email found.
+        Returns the first clean email or empty string.
         """
-        api_key = os.environ.get("APOLLO_API_KEY", "")
-        if not api_key or not name:
+        fc_key = os.environ.get("FIRECRAWL_API_KEY", "")
+        if not fc_key or not name:
             return ""
 
-        payload = json.dumps({
-            "name": name,
-            "organization_name": company or "",
-        }).encode()
+        try:
+            from firecrawl import FirecrawlApp
+        except ImportError:
+            return ""
+
+        NOREPLY = {"noreply@github.com", "users.noreply.github.com"}
+        EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+
+        app = FirecrawlApp(api_key=fc_key)
+
+        # Build a tight query — name + company or username
+        query_parts = [f'"{name}"']
+        if company:
+            query_parts.append(f'"{company}"')
+        else:
+            query_parts.append(username)
+        query_parts.append("email contact")
+        query = " ".join(query_parts)
+
+        search_url = "https://duckduckgo.com/html/?q=" + urllib.parse.quote(query)
 
         try:
-            req = urllib.request.Request(
-                "https://api.apollo.io/api/v1/people/match",
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Cache-Control": "no-cache",
-                    "X-Api-Key": api_key,
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read())
-            person = data.get("person") or {}
-            email = person.get("email", "")
-            if email and "apollo" not in email:
-                return email.lower()
+            result = app.scrape_url(search_url, formats=["markdown"])
+            text = html.unescape(result.markdown or "")
+            for match in EMAIL_RE.finditer(text):
+                email = match.group(0).lower()
+                if not any(nr in email for nr in NOREPLY) and "duckduckgo" not in email:
+                    return email
         except Exception:
             pass
 
@@ -751,13 +759,13 @@ class GitHubRadarAgent:
                         contributor.email = website_email
                         emit("email_found", f"📧 [Website] @{contributor.username} → {contributor.email}")
 
-                # Fix B: Apollo enrichment
+                # Fix B: DuckDuckGo search via Firecrawl
                 if not contributor.email and contributor.name:
-                    emit("crawling_email", f"📧 [Apollo] Enriching @{contributor.username} ({contributor.name} / {contributor.company})...")
-                    apollo_email = self.scanner.enrich_via_apollo(contributor.name, contributor.company)
-                    if apollo_email:
-                        contributor.email = apollo_email
-                        emit("email_found", f"📧 [Apollo] @{contributor.username} → {contributor.email}")
+                    emit("crawling_email", f"📧 [Search] DuckDuckGo lookup for @{contributor.username}...")
+                    search_email = self.scanner.enrich_via_search(contributor.name, contributor.company, contributor.username)
+                    if search_email:
+                        contributor.email = search_email
+                        emit("email_found", f"📧 [Search] @{contributor.username} → {contributor.email}")
 
                 if contributor.email:
                     emit("email_found", f"📧 @{contributor.username} → {contributor.email}")
