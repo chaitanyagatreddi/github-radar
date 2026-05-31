@@ -27,6 +27,21 @@ GITHUB_RADAR_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>GitHub Radar | Cybersecurity Contributors</title>
+<meta name="description" content="Find cybersecurity contributors worth knowing — scans GitHub for security tool repos, maps top contributors, scores them with gpt-4o-mini.">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="GitHub Radar — Cybersecurity contributor radar">
+<meta property="og:description" content="Find cybersecurity contributors worth knowing.">
+<meta property="og:site_name" content="GitHub Radar">
+<meta property="og:image" content="/og.png">
+
+<!-- Twitter / X -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="GitHub Radar — Cybersecurity contributor radar">
+<meta name="twitter:description" content="Find cybersecurity contributors worth knowing.">
+<meta name="twitter:image" content="/og.png">
+
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
@@ -328,6 +343,13 @@ function startScan() {
 @app.route("/")
 def index():
     return GITHUB_RADAR_HTML
+
+
+@app.route("/og.png")
+def og_image():
+    """Serve the social share preview image."""
+    from flask import send_from_directory
+    return send_from_directory(os.path.dirname(__file__), "og.png")
 
 
 @app.route("/api/github/stream")
