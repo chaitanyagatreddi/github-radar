@@ -189,10 +189,9 @@ GITHUB_RADAR_HTML = """<!DOCTYPE html>
 </div>
 
 <div class="card hidden" id="contributorsSection">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-    <h3 style="font-size:13px;color:#8b949e;text-transform:uppercase;letter-spacing:.05em;">👥 Top Contributors</h3>
-    <button onclick="exportCSV()" style="background:#238636;border:none;color:#fff;padding:7px 18px;font-size:13px;font-weight:600;border-radius:6px;cursor:pointer;">⬇ Export CSV</button>
-  </div>
+  <h3 style="font-size:13px; color:#8b949e; text-transform:uppercase; letter-spacing:.05em; margin-bottom:12px">
+    👥 Top Contributors
+  </h3>
   <table class="contributors-table">
     <thead>
       <tr>
@@ -209,32 +208,6 @@ GITHUB_RADAR_HTML = """<!DOCTYPE html>
 </div>
 
 <script>
-var _contributorsData = [];
-
-function exportCSV() {
-  if (!_contributorsData.length) return;
-  var headers = ['Username','Profile URL','Tier','Score','Email','Summary','Repos'];
-  var rows = _contributorsData.map(function(c) {
-    return [
-      c.username || '',
-      c.profile_url || '',
-      c.tier || '',
-      c.activity_score || 0,
-      c.email || '',
-      (c.summary || c.bio || '').replace(/,/g,' '),
-      (c.repos_contributed || []).join(' | ')
-    ].map(function(v){ return '"' + String(v).replace(/"/g,'""') + '"'; }).join(',');
-  });
-  var csv = [headers.join(',')].concat(rows).join('\\n');
-  var blob = new Blob([csv], {type:'text/csv'});
-  var url = URL.createObjectURL(blob);
-  var a = document.createElement('a');
-  a.href = url;
-  a.download = 'gitradar_' + (document.getElementById('keyword').value||'export').replace(/\s+/g,'_') + '.csv';
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
 function setKeyword(kw) {
   document.getElementById('keyword').value = kw;
   document.querySelectorAll('.tool-chip').forEach(c => c.classList.remove('active'));
@@ -274,7 +247,6 @@ function startScan() {
   const sources = getEnabledSources();
 
   document.getElementById('scanBtn').disabled = true;
-  _contributorsData = [];
   document.getElementById('reposSection').classList.add('hidden');
   document.getElementById('contributorsSection').classList.add('hidden');
   document.getElementById('reposGrid').innerHTML = '';
@@ -324,7 +296,6 @@ function startScan() {
       }
 
       if (type === 'complete' && data.top_contributors) {
-        _contributorsData = data.top_contributors;
         setChip('analysis', 'done');
         setChip('profiles', 'done');
         document.getElementById('contributorsSection').classList.remove('hidden');
@@ -371,10 +342,7 @@ function startScan() {
 
 @app.route("/")
 def index():
-    from flask import make_response
-    resp = make_response(GITHUB_RADAR_HTML)
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-    return resp
+    return GITHUB_RADAR_HTML
 
 
 @app.route("/og.png")
