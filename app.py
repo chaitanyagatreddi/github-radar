@@ -109,7 +109,7 @@ GITHUB_RADAR_HTML = """<!DOCTYPE html>
 <body>
 
 <!-- Email Gate Overlay -->
-<div id="emailGate" style="display:none;position:fixed;inset:0;background:#0d1117;z-index:9999;display:flex;align-items:center;justify-content:center;">
+<div id="emailGate" style="display:none;position:fixed;inset:0;background:#0d1117;z-index:9999;align-items:center;justify-content:center;">
   <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:40px;max-width:420px;width:90%;text-align:center;">
     <div style="font-size:32px;margin-bottom:12px">🛡️</div>
     <h2 style="font-size:20px;font-weight:700;color:#f0f6fc;margin-bottom:8px">GitHub Radar</h2>
@@ -264,8 +264,11 @@ function hasAccess() {
 }
 
 (function() {
+  var gate = document.getElementById('emailGate');
   if (!hasAccess()) {
-    document.getElementById('emailGate').style.display = 'flex';
+    gate.style.display = 'flex';
+  } else {
+    gate.style.display = 'none';
   }
 })();
 
